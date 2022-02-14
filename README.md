@@ -46,6 +46,7 @@ It is supposed to work either on an ESP8266 board or alternatively on an Arduino
 ### ESP8266 variant
 this variant recommends to use a WeMos D1 R2 ESP8266 board with the form factor and pin header style identical to the Arduino UNO board (see [HERE](https://de.banggood.com/D1-R2-WiFi-ESP8266-Development-Board-Compatible-UNO-Program-By-IDE-p-1011870.html?cur_warehouse=CN)). When using such board it is recommended to also use a [UNO-compatible CAN-Bus shield](https://wiki.seeedstudio.com/CAN-BUS_Shield_V2.0/).
 But an ordinary MCP2515-based SPI CAN-bus module (see [HERE](https://de.banggood.com/MCP2515-CAN-Bus-Module-Board-TJA1050-Receiver-SPI-51-MCU-ARM-Controller-5V-DC-p-1481199.html?cur_warehouse=CN&rmmds=search)) will work, too.
+
 *ATTENTION (really):*
 Because the CAN Bus shield is supplied with 5V and the ESP8266 is not (officially) 5V-tolerant, one might need a voltage divider at the MISO and the INT pin which go from the CAN Bus shield to the ESP!
 Additionally I had to re-route the INT to another IO from the ESP (now on GPIO5). Don't remember the reason actually... 
