@@ -1,7 +1,7 @@
 # MQTT-CAN-Gateway
 ## A fully trasparent MQTT-CAN-Bus gateway
 
-This software converts messages from MQTT to CAN-bus and back. Tarket system is an ESP8266 (or an Arduino UNO with ethernet shield).
+This software converts messages from MQTT to CAN-bus and back. Target system is an ESP8266 (or an Arduino UNO with ethernet shield).
 It is programmed in Arduino IDE. The board manager needs to be extended to support the ESP boards.
 The following additional libraries are needed:
 - ArduinoJson
