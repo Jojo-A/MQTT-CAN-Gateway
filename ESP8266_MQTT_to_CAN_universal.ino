@@ -6,10 +6,16 @@
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
-#include <Ethernet.h>
+
 #include <mcp_can.h>
 #include <mcp2515_can.h>
 #include <SPI.h>
+
+//#define USE_ETHERNET  // for easy changing to Arduino UNO with ethernet shield - NOT WORKING YET!
+
+#ifdef USE_ETHERNET
+#include <Ethernet.h>
+#endif
 
 #define SPI_BEGIN() pSPI->beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0))
 
@@ -29,14 +35,13 @@ char MQTT_Password[20]                = "password";       // set default value
 
 // topics we subscribe to:
 #define TOPIC_MQTT2CAN_TX          "mqtt2can/tx/can_node/+"         // message FROM the MQTT broker to be forwarded to the CAN client as a DATA frame
-
 // topics that we publish our data to:
 #define TOPIC_MQTT2CAN_RX          "mqtt2can/rx/can_node" // this part of the topic will be extended by the CAN bus node ID before publishing
 
 #define HOST_NAME                     "esp8266_mqtt2can"
 
-#define DEBUG_EN
-//#define USE_ETHERNET
+#define DEBUG_OUTPUT
+
 
 void ICACHE_RAM_ATTR MCP2515_ISR();
 
@@ -44,15 +49,14 @@ byte mac[] = {
   0x00, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5
 };
 
-long lastMsg = 0;
-
-byte TX_Buffer[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-byte RX_Buffer[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 //const int SPI_CS_PIN = 7; // pin 9 on arduino uno
 
+#ifdef USE_ETHERNET
 EthernetClient ethClient;
+#else
 WiFiClient espClient;
+#endif
 PubSubClient mqttClient;
 
 mcp2515_can CAN(CAN_CS_PIN); // blaues WEMOS D1
@@ -85,13 +89,13 @@ void setup()
   SPI.setFrequency(4000000);
   ESP.wdtDisable();
   
-  #ifdef DEBUG_EN
+  #ifdef DEBUG_OUTPUT
   Serial.print("CAN BUS Shield initialization... ");
   #endif
   LED_ON;
   while (CAN_OK != CAN.begin(CAN_125KBPS, MCP_16MHz))              // init can bus : baudrate = 125k
   {
-    #ifdef DEBUG_EN
+    #ifdef DEBUG_OUTPUT
     Serial.println("failed :( ...");
     #endif
 
@@ -100,7 +104,7 @@ void setup()
     delay(950);
     LED_ON;
   }
-  #ifdef DEBUG_EN
+  #ifdef DEBUG_OUTPUT
   Serial.println("OK!");
   #endif
   
@@ -274,30 +278,29 @@ void Save_Config()
 
 void MQTT_callback(char* topic, byte* payload, unsigned int length)
 {
+  byte l_TX_Buffer[8] = {0};
   char *l_ptr;
   char *l_ptr2;
   uint_fast8_t l_RTR = 0;
   uint32_t l_CAN_ID = 0;
+  uint_fast8_t l_ID_Type = CAN_ID_STD;
   uint_fast8_t l_DLC = 1;
-  uint_fast8_t l_Sign = 1;
 
   payload[length] = 0;
 
+  #ifdef DEBUG_OUTPUT
   Serial.print("MQTT Message arrived, Topic [");
   Serial.print(topic);
   Serial.print("], Payload [");
   Serial.print((char*)payload);
   Serial.println("]");
-
+  #endif
 
   /********* Parsing of the MQTT message **********
   * expects to have the last part of the topic to define the CAN ID and frame type: 
   * mqtt/topic/123
   * mqtt/topic/123r
   * mqtt/topic/123R
-  * - cut off prefix ("can_client")
-  * - extract CAN bus ID ("client_id")
-  * - determine if it is a command message ("set") or a "request" message
   */
   l_ptr = strtok(topic, "/");
 
@@ -320,6 +323,10 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   }
 
   l_CAN_ID = strtol(l_ptr2, NULL, 0);
+  if(l_CAN_ID > 0x7FF)
+  {
+    l_ID_Type = CAN_ID_EXT;
+  }
 
   
   /************************************************/
@@ -333,7 +340,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   l_ptr = strtok((char*)payload, " ,.-");
   while (l_ptr != NULL)
   {
-    TX_Buffer[l_DLC-1] = (byte)strtol(l_ptr, NULL, 0);
+    l_TX_Buffer[l_DLC-1] = (byte)strtol(l_ptr, NULL, 0);
 
     l_ptr = strtok(NULL, " ,.-");
     if (l_ptr != NULL)
@@ -343,49 +350,41 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
       if (l_DLC > 8)
       {
         Serial.println("Payload to long for CAN transmission (>8 Bytes). Truncating.");
-        l_DLC = 8;
         break;
       }
     }
   }
+  l_DLC -= 1;
   /****************************************************/
 
-  CAN_Send(l_CAN_ID, (byte)l_DLC, (byte)l_RTR);
-}
-
-void CAN_Send(unsigned long CAN_ID, byte DLC, byte RTR)
-{
-  uint8_t ID_Type = CAN_ID_STD;
-  
-  #ifdef DEBUG_EN
+  #ifdef DEBUG_OUTPUT
   Serial.print("Transmitting CAN message with ");
 
-  if(CAN_ID > 0x7FF)
+  if(l_ID_Type == CAN_ID_EXT)
   {
     Serial.print("extended ID[");
-    ID_Type = CAN_ID_EXT;
   }
   else
   {
     Serial.print("standard ID[");
   }
   Serial.print("0x");
-  Serial.print(CAN_ID, HEX);
+  Serial.print(l_CAN_ID, HEX);
   Serial.print("], ");
   
   Serial.print("DLC=");
-  Serial.print(DLC);
+  Serial.print(l_DLC);
   Serial.print(", ");
 
   Serial.print("Data[ ");
-  for (byte i = 0; i < DLC; i++)
+  for (byte i = 0; i < l_DLC; i++)
   {
-    Serial.print(TX_Buffer[i], HEX);
+    Serial.print(l_TX_Buffer[i], HEX);
     Serial.print(" ");
   }
   Serial.print("] ");
   
-  if (RTR)
+  if (l_RTR)
   {
     Serial.println("as RTR frame.");
   }
@@ -395,13 +394,13 @@ void CAN_Send(unsigned long CAN_ID, byte DLC, byte RTR)
   }
   #endif
 
-  CAN.sendMsgBuf(CAN_ID, ID_Type, RTR, DLC, TX_Buffer, 0);
+  CAN.sendMsgBuf(l_CAN_ID, l_ID_Type, l_RTR, l_DLC, l_TX_Buffer, 0);
 }
+
+
 
 void reconnect()
 {
-  static int l_toggle = 0;
-
   // Loop until we're reconnected
   LED_ON;
   while (!mqttClient.connected())
@@ -447,14 +446,15 @@ void MCP2515_ISR()
 {
   uint8_t l_DLC = 0;
   uint32_t l_CAN_ID = 0;
+  byte l_RX_Buffer[8] = {0};
   char l_State_Topic[50];
-  char l_Payload[30];
+  char l_Payload[50];
   char l_temp[20];
 
   while (CAN.checkReceive() == CAN_MSGAVAIL)
   {
     // read data,  len: data length, buf: data buf
-    CAN.readMsgBuf(&l_DLC, RX_Buffer);
+    CAN.readMsgBuf(&l_DLC, l_RX_Buffer);
 
     l_CAN_ID = CAN.getCanId();
 
@@ -467,7 +467,7 @@ void MCP2515_ISR()
     Serial.print(", Data[ ");
     for (uint_fast8_t i = 0; i < l_DLC; i++)
     {
-      Serial.print(RX_Buffer[i]);
+      Serial.print(l_RX_Buffer[i]);
       Serial.print(' ');
     }
     Serial.println("]");
@@ -486,12 +486,12 @@ void MCP2515_ISR()
     strcat(l_State_Topic, "R");
   }
 
-  itoa(RX_Buffer[0], l_temp, 10);
+  itoa(l_RX_Buffer[0], l_temp, 10);
   strcpy(l_Payload, l_temp);
   for (int i = 1; i < l_DLC; i++)
   {
     strcat(l_Payload, " ");
-    itoa(RX_Buffer[i], l_temp, 10);
+    itoa(l_RX_Buffer[i], l_temp, 10);
     strcat(l_Payload, l_temp);
   }
 
