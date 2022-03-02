@@ -33,34 +33,49 @@ char MQTT_Port[6]                     = "1883";           // set default value
 char MQTT_User[20]                    = "user";           // set default value
 char MQTT_Password[20]                = "password";       // set default value
 
-// topics we subscribe to:
-#define TOPIC_MQTT2CAN_TX          "mqtt2can/tx/+"         // message FROM the MQTT broker to be forwarded to the CAN client as a DATA frame
-// topics that we publish our data to:
-#define TOPIC_MQTT2CAN_RX          "mqtt2can/rx" // this part of the topic will be extended by the CAN bus node ID before publishing
+// Desired CAN bus baud rate
+#define CAN_BAUDRATE              CAN_125KBPS
 
+// Crystal on the CAN bus shield/module (usually 8 MHz or 16 MHz)
+#define CAN_SHIELD_CRYSTAL        MCP_8MHz
+
+// Topics we subscribe to.
+// Messages FROM the MQTT broker to be forwarded to the CAN bus network
+#define TOPIC_MQTT2CAN_TX          "mqtt2can/tx/+"
+
+// Topic that we publish our data to.
+// This topic will be extended by the CAN bus node ID before publishing,
+// so it will become "TOPIC_MQTT2CAN_RX/0xCANID"
+#define TOPIC_MQTT2CAN_RX          "mqtt2can/rx"
+
+// host name the ESP8266 will show in WLAN
 #define HOST_NAME                     "esp8266_mqtt2can"
 
+// a lot of serial output, useful mainly for debugging
 #define DEBUG_OUTPUT
+
+// Byte splitter characters for payloads the we receive via MQTT
+#define MQTT_RX_PAYLOAD_SPLITTER " .,;"
+
+// Byte splitter characters for messages we send out via MQTT
+#define MQTT_TX_PAYLOAD_SPLITTER ","
+
 
 
 void ICACHE_RAM_ATTR MCP2515_ISR();
 
-byte mac[] = {
-  0x00, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5
-};
-
-
-//const int SPI_CS_PIN = 7; // pin 9 on arduino uno
 
 #ifdef USE_ETHERNET
 EthernetClient ethClient;
+byte mac[] = {
+  0x00, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5
+};
 #else
 WiFiClient espClient;
 #endif
+
 PubSubClient mqttClient;
-
-mcp2515_can CAN(CAN_CS_PIN); // blaues WEMOS D1
-
+mcp2515_can CAN(CAN_CS_PIN);
 
 
 //flag for saving data
@@ -73,7 +88,7 @@ void saveConfigCallback()
   shouldSaveConfig = true;
 }
 
-/** Wird beim Start einmal ausgeführt */
+/** will be execute once at startup */
 void setup()
 {
   pinMode(LED, OUTPUT);
@@ -93,7 +108,7 @@ void setup()
   Serial.print("CAN BUS Shield initialization... ");
   #endif
   LED_ON;
-  while (CAN_OK != CAN.begin(CAN_125KBPS, MCP_16MHz))              // init can bus : baudrate = 125k
+  while (CAN_OK != CAN.begin(CAN_BAUDRATE, CAN_SHIELD_CRYSTAL))
   {
     #ifdef DEBUG_OUTPUT
     Serial.println("failed :( ...");
@@ -141,20 +156,6 @@ void setup()
 
   //reset settings - for testing
   //wifiManager.resetSettings();
-
-  /*
-    if (digitalRead(SWITCH_OPEN_IN))
-    {
-    if (!wifiManager.startConfigPortal((String("ESP") + String(ESP.getChipId())).c_str()))
-    {
-          Serial.println("failed to connect and hit timeout");
-          delay(3000);
-          //reset and try again, or maybe put it to deep sleep
-          ESP.reset();
-          delay(5000);
-    }
-    }
-  */
 
   //fetches ssid and pass and tries to connect
   //if it does not connect it starts an access point with the specified name
@@ -337,7 +338,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   *  Regardless of the format of the specific element, only the lowest 8 bits will 
   *  be taken as content for the CAN bus message byte.
   */
-  l_ptr = strtok((char*)payload, " ,.-");
+  l_ptr = strtok((char*)payload, MQTT_RX_PAYLOAD_SPLITTER);
   if(l_ptr == NULL)
   {
     l_DLC = 0;
@@ -346,9 +347,9 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   {
     while (l_ptr != NULL)
     {
-      l_TX_Buffer[l_DLC-1] = (byte)strtol(l_ptr, NULL, 0);
+      l_TX_Buffer[l_DLC-1] = strtol(l_ptr, NULL, 0) & 0xFF;
   
-      l_ptr = strtok(NULL, " ,.-");
+      l_ptr = strtok(NULL, MQTT_RX_PAYLOAD_SPLITTER);
       if (l_ptr != NULL)
       {
         l_DLC++;
@@ -387,8 +388,9 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   Serial.print("Data[ ");
   for (byte i = 0; i < l_DLC; i++)
   {
+    Serial.print("0x");
     Serial.print(l_TX_Buffer[i], HEX);
-    Serial.print(" ");
+    Serial.print(MQTT_TX_PAYLOAD_SPLITTER);
   }
   Serial.print("] ");
   
@@ -498,7 +500,7 @@ void MCP2515_ISR()
   strcpy(l_Payload, l_temp);
   for (int i = 1; i < l_DLC; i++)
   {
-    strcat(l_Payload, " ");
+    strcat(l_Payload, MQTT_TX_PAYLOAD_SPLITTER);
     itoa(l_RX_Buffer[i], l_temp, 10);
     strcat(l_Payload, l_temp);
   }
