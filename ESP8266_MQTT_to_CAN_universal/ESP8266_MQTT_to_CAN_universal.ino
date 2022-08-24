@@ -40,25 +40,27 @@ char MQTT_Password[20]                = "password";       // set default value
 #define CAN_SHIELD_CRYSTAL        MCP_8MHz
 
 // Topics we subscribe to.
-// Messages FROM the MQTT broker to be forwarded to the CAN bus network
-#define TOPIC_MQTT2CAN_TX          "mqtt2can/tx/+"
+// Messages FROM the MQTT broker to gateway itself
+#define TOPIC_MQTT2CAN_CORE          "mqtt2can/core"
+// Messages FROM the MQTT broker be forwarded TO the CAN bus network
+#define TOPIC_MQTT2CAN_TX          "mqtt2can/canbus/tx/+"
 
 // Topic that we publish our data to.
 // This topic will be extended by the CAN bus node ID before publishing,
-// so it will become "TOPIC_MQTT2CAN_RX/0xCANID"
-#define TOPIC_MQTT2CAN_RX          "mqtt2can/rx"
+// so it will become "TOPIC_MQTT2CAN_RX/canbus/0xCANID"
+#define TOPIC_MQTT2CAN_RX          "mqtt2can/canbus/rx"
 
 // host name the ESP8266 will show in WLAN
 #define HOST_NAME                     "esp8266_mqtt2can"
 
 // a lot of serial output, useful mainly for debugging
-#define DEBUG_OUTPUT
+//#define DEBUG_OUTPUT
 
 // Byte splitter characters for payloads the we receive via MQTT
-#define MQTT_RX_PAYLOAD_SPLITTER " .,;"
+#define MQTT_TX_PAYLOAD_SPLITTER " .,;"
 
 // Byte splitter characters for messages we send out via MQTT
-#define MQTT_TX_PAYLOAD_SPLITTER ","
+#define MQTT_RX_PAYLOAD_SPLITTER ","
 
 
 
@@ -297,6 +299,15 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   Serial.println("]");
   #endif
 
+  if(strcmp(topic, TOPIC_MQTT2CAN_CORE) == 0)
+  {
+    if(strcmp((char*)payload, "reboot") == 0)
+    {
+      ESP.restart();
+    }
+
+    return;
+  }
   /********* Parsing of the MQTT message **********
   * expects to have the last part of the topic to define the CAN ID and frame type: 
   * mqtt/topic/123
@@ -338,7 +349,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   *  Regardless of the format of the specific element, only the lowest 8 bits will 
   *  be taken as content for the CAN bus message byte.
   */
-  l_ptr = strtok((char*)payload, MQTT_RX_PAYLOAD_SPLITTER);
+  l_ptr = strtok((char*)payload, MQTT_TX_PAYLOAD_SPLITTER);
   if(l_ptr == NULL)
   {
     l_DLC = 0;
@@ -424,6 +435,7 @@ void reconnect()
       //digitalWrite(LED, LOW);
       //digitalWrite(LED, HIGH);
       mqttClient.subscribe(TOPIC_MQTT2CAN_TX);
+      mqttClient.subscribe(TOPIC_MQTT2CAN_CORE);
     }
     else
     {
@@ -500,7 +512,7 @@ void MCP2515_ISR()
   strcpy(l_Payload, l_temp);
   for (int i = 1; i < l_DLC; i++)
   {
-    strcat(l_Payload, MQTT_TX_PAYLOAD_SPLITTER);
+    strcat(l_Payload, MQTT_RX_PAYLOAD_SPLITTER);
     itoa(l_RX_Buffer[i], l_temp, 10);
     strcat(l_Payload, l_temp);
   }
