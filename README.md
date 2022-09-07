@@ -4,10 +4,10 @@
 This software converts messages from MQTT to CAN-bus and back. Target system is an ESP8266 (or an Arduino UNO with ethernet shield).
 It is programmed in Arduino IDE. The board manager needs to be extended to support the ESP boards.
 The following additional libraries are needed:
-- ArduinoJson
-- PubSubClient
-- WiFiManager
-- CAN-BUS Shield
+- ArduinoJson https://github.com/bblanchon/ArduinoJson
+- PubSubClient https://github.com/knolleary/pubsubclient
+- WiFiManager https://github.com/tzapu/WiFiManager
+- CAN-BUS Shield https://github.com/Seeed-Studio/Seeed_Arduino_CAN
 
 We subscribe to the following topic:
 ```
