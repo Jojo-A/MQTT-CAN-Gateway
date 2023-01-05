@@ -7,26 +7,22 @@
 #include <WiFiManager.h>
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 
-#include <mcp_can.h>
-#include <mcp2515_can.h>
+//#include <mcp_can.h>
+//#include <mcp2515_can.h>
+#include "mcp_can.h"
 #include <SPI.h>
 
-//#define USE_ETHERNET  // for easy changing to Arduino UNO with ethernet shield - NOT WORKING YET!
 
-#ifdef USE_ETHERNET
-#include <Ethernet.h>
-#endif
-
-#define SPI_BEGIN() pSPI->beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0))
+//#define SPI_BEGIN() pSPI->beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0))
 
 #define CAN_ID_STD  0
 #define CAN_ID_EXT  1
 
-#define CAN_IRQ_PIN 5 // blue WEMOS D1
-#define CAN_CS_PIN 2 // blue WEMOS D1
-#define LED         2
-#define LED_ON      (digitalWrite(LED, HIGH))
-#define LED_OFF     (digitalWrite(LED, LOW))
+#define CAN_IRQ_PIN D1
+#define CAN_CS_PIN D2
+#define LED         D4
+#define LED_ON      (digitalWrite(LED, LOW))
+#define LED_OFF     (digitalWrite(LED, HIGH))
 
 char MQTT_Server[20]                  = "192.168.5.1";    // set default value
 char MQTT_Port[6]                     = "1883";           // set default value
@@ -37,7 +33,7 @@ char MQTT_Password[20]                = "password";       // set default value
 #define CAN_BAUDRATE              CAN_125KBPS
 
 // Crystal on the CAN bus shield/module (usually 8 MHz or 16 MHz)
-#define CAN_SHIELD_CRYSTAL        MCP_8MHz
+#define CAN_SHIELD_CRYSTAL        MCP_8MHZ
 
 // Topics we subscribe to.
 // Messages FROM the MQTT broker to gateway itself
@@ -64,21 +60,16 @@ char MQTT_Password[20]                = "password";       // set default value
 
 
 
-void ICACHE_RAM_ATTR MCP2515_ISR();
+void IRAM_ATTR MCP2515_ISR();
+void Init_MCP();
+void ProcessCANMessage();
 
-
-#ifdef USE_ETHERNET
-EthernetClient ethClient;
-byte mac[] = {
-  0x00, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5
-};
-#else
 WiFiClient espClient;
-#endif
+
 
 PubSubClient mqttClient;
-mcp2515_can CAN(CAN_CS_PIN);
-
+//mcp2515_can CAN(CAN_CS_PIN);
+MCP_CAN  CAN(CAN_CS_PIN);
 
 //flag for saving data
 bool shouldSaveConfig = true;
@@ -96,42 +87,24 @@ void setup()
   pinMode(LED, OUTPUT);
   LED_OFF;
 
-  //pinMode(15, OUTPUT);
-  //digitalWrite(15, HIGH);
-  pinMode(16, INPUT);
-  //digitalWrite(15, HIGH);
+  //pinMode(16, INPUT);
 
   // Serial Port initialisation
   Serial.begin(115200);
   SPI.setFrequency(4000000);
   ESP.wdtDisable();
   
-  #ifdef DEBUG_OUTPUT
-  Serial.print("CAN BUS Shield initialization... ");
-  #endif
-  LED_ON;
-  while (CAN_OK != CAN.begin(CAN_BAUDRATE, CAN_SHIELD_CRYSTAL))
-  {
-    #ifdef DEBUG_OUTPUT
-    Serial.println("failed :( ...");
-    #endif
-
-    delay(50);
-    LED_OFF;
-    delay(950);
-    LED_ON;
-  }
-  #ifdef DEBUG_OUTPUT
-  Serial.println("OK!");
-  #endif
+    // wait for everything to become steady:
+  delay(500);
   
- attachInterrupt(CAN_IRQ_PIN, MCP2515_ISR, FALLING); // start interrupt
+  Init_MCP();
 
-  CAN.init_Mask(0, CAN_ID_STD, 0);  // accept ALL messages with standard identifier
-  CAN.init_Mask(1, CAN_ID_EXT, 0);  // accept ALL messages with extended identifier
+ //attachInterrupt(CAN_IRQ_PIN, MCP2515_ISR, FALLING); // start interrupt
+
 
   // wait for everything to become steady:
   delay(500);
+
 
   ESP.wdtEnable(1000);
   
@@ -153,7 +126,6 @@ void setup()
   wifiManager.addParameter(&custom_mqtt_user);
   wifiManager.addParameter(&custom_mqtt_password);
 
-#ifndef USE_ETHERNET
   WiFi.hostname(HOST_NAME);
 
   //reset settings - for testing
@@ -170,12 +142,7 @@ void setup()
     ESP.reset();
     delay(5000);
   }
-  #else
-  Serial.print("Waiting for an IP address...");
-  Ethernet.begin(mac);
-  Serial.print("My IP address: ");
-  Serial.print(Ethernet.localIP());
-  #endif
+  
   //if you get here you have connected to the WiFi
   Serial.println("connected...yeey :)");
 
@@ -190,17 +157,40 @@ void setup()
   {
     Save_Config();
   }
-
-  #ifdef USE_ETHERNET
-  mqttClient.setClient(ethClient);
-  #else
+  
   mqttClient.setClient(espClient);
-  #endif
 
   mqttClient.setServer(MQTT_Server, String(MQTT_Port).toInt());
   mqttClient.setCallback(MQTT_callback);
 }
 
+void Init_MCP()
+{
+  //cli();//stop interrupts
+  Serial.println("CAN BUS Shield initialization... ");
+  LED_ON;
+  while (CAN_OK != CAN.begin(MCP_ANY, CAN_BAUDRATE, CAN_SHIELD_CRYSTAL))              // init can bus : baudrate = 500k
+  {
+    Serial.println("CAN BUS Shield init failed.");
+    Serial.println(" Init CAN BUS Shield again...");
+    
+    delay(100);
+    LED_OFF;
+    delay(900);
+    LED_ON;
+  }
+  LED_OFF;  
+  Serial.println("CAN BUS Shield init ok!");
+  
+  /*
+     set mask, set filter
+  */
+  CAN.init_Mask(0, CAN_ID_STD, 0);  // accept ALL messages with standard identifier
+  CAN.init_Mask(1, CAN_ID_EXT, 0);  // accept ALL messages with extended identifier 
+
+  CAN.setMode(MCP_NORMAL);                     // Set operation mode to normal so the MCP2515 sends acks to received data.  
+  //sei();//allow interrupts  
+}
 void Mount_SPIFFS()
 {
   //clean FS, for testing
@@ -225,28 +215,28 @@ void Mount_SPIFFS()
         std::unique_ptr<char[]> buf(new char[size]);
 
         configFile.readBytes(buf.get(), size);
-        DynamicJsonBuffer jsonBuffer;
-        JsonObject& json = jsonBuffer.parseObject(buf.get());
-        json.printTo(Serial);
-        if (json.success())
+        //DynamicJsonBuffer jsonBuffer;
+        DynamicJsonDocument json(1024);
+        DeserializationError error = deserializeJson(json, buf.get());        
+        //JsonObject& json = jsonBuffer.parseObject(buf.get());
+        serializeJson(json, Serial);
+        if (error)
         {
-          Serial.println("\nparsed json");
+          Serial.println("failed to load json config");  
+          return;
+        }        
+         
+        Serial.println("\nparsed json");
 
-          strcpy(MQTT_Server,   json["mqtt_server"]);
-          strcpy(MQTT_Port,     json["mqtt_port"]);
-          strcpy(MQTT_User,     json["mqtt_user"]);
-          strcpy(MQTT_Password, json["mqtt_password"]);
-          
-          Serial.println(MQTT_Server);
-          Serial.println(MQTT_Port);
-          Serial.println(MQTT_User);
-          Serial.println(MQTT_Password);
-
-        }
-        else
-        {
-          Serial.println("failed to load json config");
-        }
+        strcpy(MQTT_Server,   json["mqtt_server"]);
+        strcpy(MQTT_Port,     json["mqtt_port"]);
+        strcpy(MQTT_User,     json["mqtt_user"]);
+        strcpy(MQTT_Password, json["mqtt_password"]);
+        
+        Serial.println(MQTT_Server);
+        Serial.println(MQTT_Port);
+        Serial.println(MQTT_User);
+        Serial.println(MQTT_Password);
       }
     }
   }
@@ -260,8 +250,9 @@ void Mount_SPIFFS()
 void Save_Config()
 {
   Serial.println("saving config");
-  DynamicJsonBuffer jsonBuffer;
-  JsonObject& json = jsonBuffer.createObject();
+  //DynamicJsonBuffer jsonBuffer;
+  DynamicJsonDocument json(1024);  
+  //JsonObject& json = jsonBuffer.createObject();
   json["mqtt_server"] = MQTT_Server;
   json["mqtt_port"] = MQTT_Port;
   json["mqtt_user"] = MQTT_User;
@@ -273,8 +264,8 @@ void Save_Config()
     Serial.println("failed to open config file for writing");
   }
 
-  json.prettyPrintTo(Serial);
-  json.printTo(configFile);
+  serializeJsonPretty(json, Serial);
+  serializeJson(json, configFile);
   configFile.close();
   //end save
 }
@@ -303,6 +294,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   {
     if(strcmp((char*)payload, "reboot") == 0)
     {
+      Serial.print("Rebooting MQTT-to-CAN gateway..."); 
       ESP.restart();
     }
 
@@ -319,7 +311,8 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   // find last element of topic:
   while (l_ptr != NULL)
   {
-    Serial.println(l_ptr);
+    Serial.print(l_ptr);
+    Serial.print("/");    
     l_ptr2 = l_ptr; // reminder to the start position of the ID substring
     l_ptr = strtok (NULL, "/");
   }
@@ -327,7 +320,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   
   l_ptr = l_ptr2 + strlen (l_ptr2)-1;
 
-  Serial.println(*l_ptr);
+  //Serial.println(*l_ptr);
   if(   (*l_ptr == 'r')
       ||(*l_ptr == 'R'))
   {
@@ -339,6 +332,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   {
     l_ID_Type = CAN_ID_EXT;
   }
+  Serial.println("");
 
   
   /************************************************/
@@ -360,6 +354,8 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
     {
       l_TX_Buffer[l_DLC-1] = strtol(l_ptr, NULL, 0) & 0xFF;
   
+      Serial.print(l_ptr);
+      Serial.print(" ");             
       l_ptr = strtok(NULL, MQTT_RX_PAYLOAD_SPLITTER);
       if (l_ptr != NULL)
       {
@@ -373,6 +369,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
         }
       }
     }
+    Serial.println("");    
   }
   
   /****************************************************/
@@ -401,7 +398,7 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   {
     Serial.print("0x");
     Serial.print(l_TX_Buffer[i], HEX);
-    Serial.print(MQTT_TX_PAYLOAD_SPLITTER);
+    Serial.print(" ");
   }
   Serial.print("] ");
   
@@ -414,8 +411,9 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
     Serial.println("as DATA frame.");
   }
   #endif
-
-  CAN.sendMsgBuf(l_CAN_ID, l_ID_Type, l_RTR, l_DLC, l_TX_Buffer, 0);
+  LED_ON;  
+  CAN.sendMsgBuf(l_CAN_ID, l_ID_Type, l_DLC, l_TX_Buffer);
+  LED_OFF;  
 }
 
 
@@ -462,23 +460,24 @@ void reconnect()
       LED_ON;
     }
   }
+  LED_OFF;
 }
 
-void MCP2515_ISR()
+void ProcessCANMessage()
 {
   uint8_t l_DLC = 0;
-  uint32_t l_CAN_ID = 0;
+  long unsigned int l_CAN_ID = 0;
+  byte l_Ext_ID = 0; 
   byte l_RX_Buffer[8] = {0};
   char l_State_Topic[50];
   char l_Payload[50];
   char l_temp[20];
 
-  while (CAN.checkReceive() == CAN_MSGAVAIL)
+  if (CAN.checkReceive() == CAN_MSGAVAIL)
   {
+    LED_ON;    
     // read data,  len: data length, buf: data buf
-    CAN.readMsgBuf(&l_DLC, l_RX_Buffer);
-
-    l_CAN_ID = CAN.getCanId();
+    CAN.readMsgBuf(&l_CAN_ID, &l_Ext_ID, &l_DLC, l_RX_Buffer);
 
     #ifdef DEBUG_EN
     Serial.print("CAN Message arrived ID[");
@@ -494,6 +493,7 @@ void MCP2515_ISR()
     }
     Serial.println("]");
     #endif
+  LED_OFF;    
   }
 
   strcpy(l_State_Topic, TOPIC_MQTT2CAN_RX);
@@ -503,7 +503,8 @@ void MCP2515_ISR()
   itoa(l_CAN_ID, l_temp, 16);
   strcat(l_State_Topic, l_temp);
 
-  if(CAN.isRemoteRequest())
+  //if(CAN.isRemoteRequest())
+  if((l_CAN_ID & 0x40000000) == 0x40000000)   // Determine if message is a remote request frame.
   {
     strcat(l_State_Topic, "R");
   }
@@ -526,50 +527,27 @@ void MCP2515_ISR()
 
   mqttClient.publish(l_State_Topic, l_Payload);
 }
+void MCP2515_ISR()
+{
+  ProcessCANMessage();
+}
 
 void loop()
 {
+  if (CAN.checkError())
+  {
+  //  Init_MCP();
+  }    
+
+  if(!digitalRead(CAN_IRQ_PIN))
+  {
+    ProcessCANMessage();
+  }
+
   if (!mqttClient.connected())
   {
     reconnect();
   }
 
   mqttClient.loop();
-
-#ifdef USE_ETHERNET
-  switch (Ethernet.maintain())
-  {
-    case 1:
-      //renewed fail
-      Serial.println("Error: renewed fail");
-      break;
-
-    case 2:
-      //renewed success
-      Serial.println("Renewed success");
-
-      //print your local IP address:
-      Serial.print("My IP address: ");
-      Serial.print(Ethernet.localIP());
-      break;
-
-    case 3:
-      //rebind fail
-      Serial.println("Error: rebind fail");
-      break;
-
-    case 4:
-      //rebind success
-      Serial.println("Rebind success");
-
-      //print your local IP address:
-      Serial.print("My IP address: ");
-      Serial.print(Ethernet.localIP());
-      break;
-
-    default:
-      //nothing happened
-      break;
-  }
-#endif
 }
