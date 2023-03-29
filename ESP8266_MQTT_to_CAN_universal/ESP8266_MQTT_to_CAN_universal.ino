@@ -1,4 +1,12 @@
-#include <FS.h> //this needs to be first, or it all crashes and burns...
+#define USE_LittleFS
+
+#include <FS.h>
+#ifdef USE_LittleFS
+  #define SPIFFS LittleFS
+  #include <LittleFS.h> 
+#else
+  #include <SPIFFS.h>
+#endif
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
