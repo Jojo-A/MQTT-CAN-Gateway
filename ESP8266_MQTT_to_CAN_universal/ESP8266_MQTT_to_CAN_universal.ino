@@ -15,8 +15,6 @@
 #include <WiFiManager.h>
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 
-//#include <mcp_can.h>
-//#include <mcp2515_can.h>
 #include "mcp_can.h"
 #include <SPI.h>
 
@@ -76,7 +74,7 @@ WiFiClient espClient;
 
 
 PubSubClient mqttClient;
-//mcp2515_can CAN(CAN_CS_PIN);
+
 MCP_CAN  CAN(CAN_CS_PIN);
 
 //flag for saving data
@@ -94,8 +92,6 @@ void setup()
 {
   pinMode(LED, OUTPUT);
   LED_OFF;
-
-  //pinMode(16, INPUT);
 
   // Serial Port initialisation
   Serial.begin(115200);
@@ -174,10 +170,9 @@ void setup()
 
 void Init_MCP()
 {
-  //cli();//stop interrupts
   Serial.println("CAN BUS Shield initialization... ");
   LED_ON;
-  while (CAN_OK != CAN.begin(MCP_ANY, CAN_BAUDRATE, CAN_SHIELD_CRYSTAL))              // init can bus : baudrate = 500k
+  while (CAN_OK != CAN.begin(MCP_ANY, CAN_BAUDRATE, CAN_SHIELD_CRYSTAL))
   {
     Serial.println("CAN BUS Shield init failed.");
     Serial.println(" Init CAN BUS Shield again...");
@@ -196,8 +191,7 @@ void Init_MCP()
   CAN.init_Mask(0, CAN_ID_STD, 0);  // accept ALL messages with standard identifier
   CAN.init_Mask(1, CAN_ID_EXT, 0);  // accept ALL messages with extended identifier 
 
-  CAN.setMode(MCP_NORMAL);                     // Set operation mode to normal so the MCP2515 sends acks to received data.  
-  //sei();//allow interrupts  
+  CAN.setMode(MCP_NORMAL);                     // Set operation mode to normal so the MCP2515 sends acks to received data.   
 }
 void Mount_SPIFFS()
 {
@@ -258,9 +252,7 @@ void Mount_SPIFFS()
 void Save_Config()
 {
   Serial.println("saving config");
-  //DynamicJsonBuffer jsonBuffer;
   DynamicJsonDocument json(1024);  
-  //JsonObject& json = jsonBuffer.createObject();
   json["mqtt_server"] = MQTT_Server;
   json["mqtt_port"] = MQTT_Port;
   json["mqtt_user"] = MQTT_User;
@@ -438,8 +430,7 @@ void reconnect()
     if (mqttClient.connect(HOST_NAME, MQTT_User, MQTT_Password))
     {
       Serial.println("connected");
-      //digitalWrite(LED, LOW);
-      //digitalWrite(LED, HIGH);
+
       mqttClient.subscribe(TOPIC_MQTT2CAN_TX);
       mqttClient.subscribe(TOPIC_MQTT2CAN_CORE);
     }
