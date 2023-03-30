@@ -1,13 +1,13 @@
 # MQTT-CAN-Gateway
 ## A fully transparent MQTT-CAN-Bus gateway
 
-This software converts messages from MQTT to CAN-bus and back. Target system is an ESP8266 (or an Arduino UNO with ethernet shield).
+This software converts messages from MQTT to CAN-bus and back. Target system is an ESP8266.
 It is programmed in Arduino IDE. The board manager needs to be extended to support the ESP boards.
 The following additional libraries are needed:
 - ArduinoJson https://github.com/bblanchon/ArduinoJson
 - PubSubClient https://github.com/knolleary/pubsubclient
 - WiFiManager https://github.com/tzapu/WiFiManager
-- CAN-BUS Shield https://github.com/Seeed-Studio/Seeed_Arduino_CAN
+- mcp_can https://github.com/timurrrr/arduino-CAN
 
 We subscribe to the following topic:
 ```
@@ -48,12 +48,5 @@ this variant recommends to use a WeMos D1 R2 ESP8266 board with the form factor 
 But an ordinary MCP2515-based SPI CAN-bus module (see [HERE](https://de.banggood.com/MCP2515-CAN-Bus-Module-Board-TJA1050-Receiver-SPI-51-MCU-ARM-Controller-5V-DC-p-1481199.html?cur_warehouse=CN&rmmds=search)) will work, too.
 
 *ATTENTION (really):*
-Because the CAN Bus shield is supplied with 5V and the ESP8266 is not (officially) 5V-tolerant, one might need a voltage divider at the MISO and the INT pin which go from the CAN Bus shield to the ESP!
-Additionally I had to re-route the INT to another IO from the ESP (now on GPIO5). Don't remember the reason actually... 
+Because the CAN Bus shield is supplied with 5V and the ESP8266 is not (officially) 5V-tolerant, one might need a voltage divider at the MISO and the INT pin which go from the CAN Bus shield to the ESP! In fact it also works without any voltage dividers. But don't blame me if you frie your ESP chip.
 
-### Arduino UNO variant (NOT FUNCTIONAL, YET!!!)
-this variant uses an Arduino UNO together with an ethernet shield and additionally either an [UNO-compatibel CAN-bus shield](https://wiki.seeedstudio.com/CAN-BUS_Shield_V2.0/) or an ordinary MCP2515-based SPI CAN-bus module (see [HERE](https://de.banggood.com/MCP2515-CAN-Bus-Module-Board-TJA1050-Receiver-SPI-51-MCU-ARM-Controller-5V-DC-p-1481199.html?cur_warehouse=CN&rmmds=search)).
-
-I personally recommend using the ESP8266, because it has a more powerful CPU to handle all the standard C string conversion routines. But as we already know it from most other Arduino projects, noone cares about computation efficiency on the tiny 8-bit cores...
-
-The Support for the Arduino UNO is not finished, yet because of no need (personally, currently).
