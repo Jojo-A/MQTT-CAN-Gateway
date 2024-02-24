@@ -6,8 +6,9 @@
   #include <LittleFS.h> 
 #else
   #include <SPIFFS.h>
-#endif
+#endif 
 
+#include <ArduinoOTA.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <DNSServer.h>
@@ -15,14 +16,14 @@
 #include <WiFiManager.h>
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 
-#include "mcp_can.h"
-#include <SPI.h>
-
-
-//#define SPI_BEGIN() pSPI->beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0))
+#include "CAN.h"    //https://github.com/timurrrr/arduino-CAN
 
 #define CAN_ID_STD  0
 #define CAN_ID_EXT  1
+
+#ifndef CAN_OK
+#define CAN_OK  1
+#endif
 
 #define CAN_IRQ_PIN D1
 #define CAN_CS_PIN D2
@@ -36,27 +37,30 @@ char MQTT_User[20]                    = "user";           // set default value
 char MQTT_Password[20]                = "password";       // set default value
 
 // Desired CAN bus baud rate
-#define CAN_BAUDRATE              CAN_125KBPS
+#define CAN_BAUDRATE              125E3
 
 // Crystal on the CAN bus shield/module (usually 8 MHz or 16 MHz)
-#define CAN_SHIELD_CRYSTAL        MCP_8MHZ
+#define CAN_SHIELD_CRYSTAL        8E6
 
 // Topics we subscribe to.
 // Messages FROM the MQTT broker to gateway itself
-#define TOPIC_MQTT2CAN_CORE          "mqtt2can/core"
+#define TOPIC_PREFIX               "mqtt2can"
+
+#define TOPIC_CORE        TOPIC_PREFIX"/core"
+#define TOPIC_AVAILABLE   TOPIC_PREFIX"/available"
 // Messages FROM the MQTT broker be forwarded TO the CAN bus network
-#define TOPIC_MQTT2CAN_TX          "mqtt2can/canbus/tx/+"
+#define TOPIC_CANBUS_TX          TOPIC_PREFIX"/canbus/tx/+"
 
 // Topic that we publish our data to.
 // This topic will be extended by the CAN bus node ID before publishing,
-// so it will become "TOPIC_MQTT2CAN_RX/canbus/0xCANID"
-#define TOPIC_MQTT2CAN_RX          "mqtt2can/canbus/rx"
+// so it will become "TOPIC_CANBUS_RX/canbus/0xCANID"
+#define TOPIC_CANBUS_RX          TOPIC_PREFIX"/canbus/rx"
 
 // host name the ESP8266 will show in WLAN
 #define HOST_NAME                     "esp8266_mqtt2can"
 
 // a lot of serial output, useful mainly for debugging
-//#define DEBUG_OUTPUT
+#define DEBUG_OUTPUT
 
 // Byte splitter characters for payloads the we receive via MQTT
 #define MQTT_TX_PAYLOAD_SPLITTER " .,;"
@@ -65,17 +69,12 @@ char MQTT_Password[20]                = "password";       // set default value
 #define MQTT_RX_PAYLOAD_SPLITTER ","
 
 
-
 void IRAM_ATTR MCP2515_ISR();
 void Init_MCP();
-void ProcessCANMessage();
+void ProcessCANMessage(int packetSize);
 
 WiFiClient espClient;
-
-
 PubSubClient mqttClient;
-
-MCP_CAN  CAN(CAN_CS_PIN);
 
 //flag for saving data
 bool shouldSaveConfig = true;
@@ -102,23 +101,16 @@ void setup()
   delay(500);
   
   Init_MCP();
-
- //attachInterrupt(CAN_IRQ_PIN, MCP2515_ISR, FALLING); // start interrupt
-
-
-  // wait for everything to become steady:
-  delay(500);
-
+  Init_OTA();
 
   ESP.wdtEnable(1000);
-  
   Mount_SPIFFS();
 
   // The extra parameters to be configured (can be either global or just in the setup)
   // After connecting, parameter.getValue() will get you the configured value
   // id/name placeholder/prompt default length
-  WiFiManagerParameter custom_mqtt_server("server", "192.168.5.5", MQTT_Server, sizeof(MQTT_Server));
-  WiFiManagerParameter custom_mqtt_port("port", "1883", MQTT_Port, sizeof(MQTT_Port));
+  WiFiManagerParameter custom_mqtt_server("server", "server", MQTT_Server, sizeof(MQTT_Server));
+  WiFiManagerParameter custom_mqtt_port("port", "port", MQTT_Port, sizeof(MQTT_Port));
   WiFiManagerParameter custom_mqtt_user("user", "mqtt_user", MQTT_User, sizeof(MQTT_User));
   WiFiManagerParameter custom_mqtt_password("password", "mqtt_password", MQTT_Password, sizeof(MQTT_Password));
 
@@ -131,6 +123,8 @@ void setup()
   wifiManager.addParameter(&custom_mqtt_password);
 
   WiFi.hostname(HOST_NAME);
+  WiFi.setAutoReconnect(true);
+  wifiManager.setConfigPortalTimeout(120); 
 
   //reset settings - for testing
   //wifiManager.resetSettings();
@@ -171,8 +165,11 @@ void setup()
 void Init_MCP()
 {
   Serial.println("CAN BUS Shield initialization... ");
+    
+  CAN.setClockFrequency(CAN_SHIELD_CRYSTAL);
+  CAN.setPins(CAN_CS_PIN);
   LED_ON;
-  while (CAN_OK != CAN.begin(MCP_ANY, CAN_BAUDRATE, CAN_SHIELD_CRYSTAL))
+  while (CAN_OK != CAN.begin(CAN_BAUDRATE))              // init can bus : baudrate = 500k
   {
     Serial.println("CAN BUS Shield init failed.");
     Serial.println(" Init CAN BUS Shield again...");
@@ -188,10 +185,49 @@ void Init_MCP()
   /*
      set mask, set filter
   */
-  CAN.init_Mask(0, CAN_ID_STD, 0);  // accept ALL messages with standard identifier
-  CAN.init_Mask(1, CAN_ID_EXT, 0);  // accept ALL messages with extended identifier 
+  //CAN.filter(0x00, 0x00);  // accept ALL messages with standard identifier
+  //CAN.filterExtended(0x00, 0x00);  // accept ALL messages with extended identifier 
+  //CAN.setFilterRegisters(
+  //  0, 0, 0,
+  //  0, 0, 0, 0, 0,
+  //  true);
+}
+void Init_OTA()
+{
+  ArduinoOTA.setHostname("mqtt2can_gateway");
 
-  CAN.setMode(MCP_NORMAL);                     // Set operation mode to normal so the MCP2515 sends acks to received data.   
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else {  // U_FS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Serial.println("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End Failed");
+    }
+  });
+  ArduinoOTA.begin();
 }
 void Mount_SPIFFS()
 {
@@ -217,10 +253,8 @@ void Mount_SPIFFS()
         std::unique_ptr<char[]> buf(new char[size]);
 
         configFile.readBytes(buf.get(), size);
-        //DynamicJsonBuffer jsonBuffer;
         DynamicJsonDocument json(1024);
         DeserializationError error = deserializeJson(json, buf.get());        
-        //JsonObject& json = jsonBuffer.parseObject(buf.get());
         serializeJson(json, Serial);
         if (error)
         {
@@ -252,7 +286,9 @@ void Mount_SPIFFS()
 void Save_Config()
 {
   Serial.println("saving config");
+  //DynamicJsonBuffer jsonBuffer;
   DynamicJsonDocument json(1024);  
+  //JsonObject& json = jsonBuffer.createObject();
   json["mqtt_server"] = MQTT_Server;
   json["mqtt_port"] = MQTT_Port;
   json["mqtt_user"] = MQTT_User;
@@ -290,12 +326,21 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   Serial.println("]");
   #endif
 
-  if(strcmp(topic, TOPIC_MQTT2CAN_CORE) == 0)
+  if(strcmp(topic, TOPIC_CORE) == 0)
   {
     if(strcmp((char*)payload, "reboot") == 0)
     {
       Serial.print("Rebooting MQTT-to-CAN gateway..."); 
       ESP.restart();
+    }
+
+    else if(strcmp((char*)payload, "configportal") == 0)
+    {
+      Serial.print("Starting Config Portal HotSpot...");
+      WiFiManager wifiManager;
+      wifiManager.setConfigPortalTimeout(120);
+      wifiManager.startConfigPortal();
+      wifiManager.autoConnect();
     }
 
     return;
@@ -412,7 +457,17 @@ void MQTT_callback(char* topic, byte* payload, unsigned int length)
   }
   #endif
   LED_ON;  
-  CAN.sendMsgBuf(l_CAN_ID, l_ID_Type, l_DLC, l_TX_Buffer);
+  if(l_ID_Type == CAN_ID_EXT)
+  {
+    CAN.beginExtendedPacket(l_CAN_ID, l_DLC, l_RTR);
+  }
+  else
+  {
+    CAN.beginPacket(l_CAN_ID, l_DLC, l_RTR);
+  }
+    
+  CAN.write(l_TX_Buffer, l_DLC);
+  CAN.endPacket();
   LED_OFF;  
 }
 
@@ -431,8 +486,9 @@ void reconnect()
     {
       Serial.println("connected");
 
-      mqttClient.subscribe(TOPIC_MQTT2CAN_TX);
-      mqttClient.subscribe(TOPIC_MQTT2CAN_CORE);
+      mqttClient.publish(TOPIC_AVAILABLE, "online");
+      mqttClient.subscribe(TOPIC_CANBUS_TX);
+      mqttClient.subscribe(TOPIC_CORE);
     }
     else
     {
@@ -462,23 +518,22 @@ void reconnect()
   LED_OFF;
 }
 
-void ProcessCANMessage()
+void ProcessCANMessage(int packetSize)
 {
-  uint8_t l_DLC = 0;
-  long unsigned int l_CAN_ID = 0;
-  byte l_Ext_ID = 0; 
+  uint8_t l_DLC = CAN.packetDlc();
+  bool l_RTR = CAN.packetRtr();
+  long unsigned int l_CAN_ID = CAN.packetId();
+  byte l_Ext_ID = CAN.packetExtended(); 
   byte l_RX_Buffer[8] = {0};
   char l_State_Topic[50];
   char l_Payload[50];
   char l_temp[20];
 
-  if (CAN.checkReceive() == CAN_MSGAVAIL)
+  if (packetSize)
   {
     LED_ON;    
-    // read data,  len: data length, buf: data buf
-    CAN.readMsgBuf(&l_CAN_ID, &l_Ext_ID, &l_DLC, l_RX_Buffer);
 
-    #ifdef DEBUG_EN
+    #ifdef DEBUG_OUTPUT
     Serial.print("CAN Message arrived ID[");
     Serial.print("0x");
     Serial.print(l_CAN_ID, HEX);
@@ -487,6 +542,7 @@ void ProcessCANMessage()
     Serial.print(", Data[ ");
     for (uint_fast8_t i = 0; i < l_DLC; i++)
     {
+      l_RX_Buffer[i] = CAN.read();
       Serial.print(l_RX_Buffer[i]);
       Serial.print(' ');
     }
@@ -494,8 +550,10 @@ void ProcessCANMessage()
     #endif
   LED_OFF;    
   }
-
-  strcpy(l_State_Topic, TOPIC_MQTT2CAN_RX);
+  else
+    return;
+    
+  strcpy(l_State_Topic, TOPIC_CANBUS_RX);
 
   strcat(l_State_Topic, "/0x");
   
@@ -503,7 +561,8 @@ void ProcessCANMessage()
   strcat(l_State_Topic, l_temp);
 
   //if(CAN.isRemoteRequest())
-  if((l_CAN_ID & 0x40000000) == 0x40000000)   // Determine if message is a remote request frame.
+  //if((l_CAN_ID & 0x40000000) == 0x40000000)   // Determine if message is a remote request frame.
+  if(l_RTR)
   {
     strcat(l_State_Topic, "R");
   }
@@ -517,7 +576,7 @@ void ProcessCANMessage()
     strcat(l_Payload, l_temp);
   }
 
-  #ifdef DEBUG_EN
+  #ifdef DEBUG_OUTPUT
   Serial.print("Publishing on topic [");
   Serial.print(l_State_Topic);
   Serial.print("] ");
@@ -526,27 +585,30 @@ void ProcessCANMessage()
 
   mqttClient.publish(l_State_Topic, l_Payload);
 }
-void MCP2515_ISR()
-{
-  ProcessCANMessage();
-}
 
 void loop()
 {
-  if (CAN.checkError())
-  {
-  //  Init_MCP();
-  }    
+  int packetSize = CAN.parsePacket();
 
-  if(!digitalRead(CAN_IRQ_PIN))
+  if (packetSize)
   {
-    ProcessCANMessage();
+    Serial.println(packetSize);    
+    ProcessCANMessage(packetSize);
   }
-
-  if (!mqttClient.connected())
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Trying to connect to wifi");
+    WiFiManager wifiManager;
+    wifiManager.setConfigPortalTimeout(120);
+    wifiManager.autoConnect();
+  }
+  else if (!mqttClient.connected())
   {
+    Serial.println("Calling MQTT reconnect");    
     reconnect();
   }
 
   mqttClient.loop();
+  ArduinoOTA.handle();
+
 }
